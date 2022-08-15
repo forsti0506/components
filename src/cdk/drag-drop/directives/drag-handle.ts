@@ -33,6 +33,7 @@ export const CDK_DRAG_HANDLE = new InjectionToken<CdkDragHandle>('CdkDragHandle'
   selector: '[cdkDragHandle]',
   host: {
     'class': 'cdk-drag-handle',
+    'tabindex': '0',
   },
   providers: [{provide: CDK_DRAG_HANDLE, useExisting: CdkDragHandle}],
 })

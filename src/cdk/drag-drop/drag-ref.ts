@@ -1,3 +1,4 @@
+import {SPACE} from './../keycodes/keycodes';
 /**
  * @license
  * Copyright Google LLC All Rights Reserved.
@@ -18,7 +19,7 @@ import {coerceBooleanProperty, coerceElement} from '@angular/cdk/coercion';
 import {isFakeMousedownFromScreenReader, isFakeTouchstartFromScreenReader} from '@angular/cdk/a11y';
 import {Subscription, Subject, Observable} from 'rxjs';
 import {DropListRefInternal as DropListRef} from './drop-list-ref';
-import {DragDropRegistry} from './drag-drop-registry';
+import {DragDropRegistry, KeyboardMovement} from './drag-drop-registry';
 import {
   combineTransforms,
   DragCSSStyleDeclaration,
@@ -181,7 +182,7 @@ export class DragRef<T = any> {
   private readonly _moveEvents = new Subject<{
     source: DragRef;
     pointerPosition: {x: number; y: number};
-    event: MouseEvent | TouchEvent;
+    event: MouseEvent | TouchEvent | KeyboardEvent;
     distance: Point;
     delta: {x: -1 | 0 | 1; y: -1 | 0 | 1};
   }>();
@@ -223,6 +224,9 @@ export class DragRef<T = any> {
 
   /** Subscription to the viewport being resized. */
   private _resizeSubscription = Subscription.EMPTY;
+
+  /** Subscription to keyboard movement events. */
+  private _keyboardSubscription = Subscription.EMPTY;
 
   /**
    * Time at which the last touch event occurred. Used to avoid firing the same
@@ -277,6 +281,8 @@ export class DragRef<T = any> {
    */
   private _cachedShadowRoot: ShadowRoot | null | undefined;
 
+  private _keyDragDropEnabled = false;
+
   /** Axis along which dragging is locked. */
   lockAxis: 'x' | 'y';
 
@@ -308,17 +314,23 @@ export class DragRef<T = any> {
   readonly beforeStarted = new Subject<void>();
 
   /** Emits when the user starts dragging the item. */
-  readonly started = new Subject<{source: DragRef; event: MouseEvent | TouchEvent}>();
+  readonly started = new Subject<{
+    source: DragRef;
+    event: MouseEvent | TouchEvent | KeyboardEvent;
+  }>();
 
   /** Emits when the user has released a drag item, before any animations have started. */
-  readonly released = new Subject<{source: DragRef; event: MouseEvent | TouchEvent}>();
+  readonly released = new Subject<{
+    source: DragRef;
+    event: MouseEvent | TouchEvent | KeyboardEvent;
+  }>();
 
   /** Emits when the user stops dragging an item in the container. */
   readonly ended = new Subject<{
     source: DragRef;
     distance: Point;
     dropPoint: Point;
-    event: MouseEvent | TouchEvent;
+    event: MouseEvent | TouchEvent | KeyboardEvent;
   }>();
 
   /** Emits when the user has moved the item into a new container. */
@@ -337,7 +349,7 @@ export class DragRef<T = any> {
     distance: Point;
     dropPoint: Point;
     isPointerOverContainer: boolean;
-    event: MouseEvent | TouchEvent;
+    event: MouseEvent | TouchEvent | KeyboardEvent;
   }>();
 
   /**
@@ -347,7 +359,7 @@ export class DragRef<T = any> {
   readonly moved: Observable<{
     source: DragRef;
     pointerPosition: {x: number; y: number};
-    event: MouseEvent | TouchEvent;
+    event: MouseEvent | TouchEvent | KeyboardEvent;
     distance: Point;
     delta: {x: -1 | 0 | 1; y: -1 | 0 | 1};
   }> = this._moveEvents;
@@ -364,7 +376,7 @@ export class DragRef<T = any> {
   constrainPosition?: (
     userPointerPosition: Point,
     dragRef: DragRef,
-    dimensions: ClientRect,
+    dimensions: DOMRect,
     pickupPositionInElement: Point,
   ) => Point;
 
@@ -455,6 +467,7 @@ export class DragRef<T = any> {
 
       this._ngZone.runOutsideAngular(() => {
         element.addEventListener('mousedown', this._pointerDown, activeEventListenerOptions);
+        element.addEventListener('keydown', this._keyDown, activeEventListenerOptions);
         element.addEventListener('touchstart', this._pointerDown, passiveEventListenerOptions);
         element.addEventListener('dragstart', this._nativeDragStart, activeEventListenerOptions);
       });
@@ -621,6 +634,7 @@ export class DragRef<T = any> {
     this._pointerMoveSubscription.unsubscribe();
     this._pointerUpSubscription.unsubscribe();
     this._scrollSubscription.unsubscribe();
+    this._keyboardSubscription.unsubscribe();
   }
 
   /** Destroys the preview element and its ViewRef. */
@@ -653,8 +667,32 @@ export class DragRef<T = any> {
     }
   };
 
+  /** Handler for the `keyboard` start events events. */
+  private _keyDown = (event: KeyboardEvent) => {
+    if (event.key == ' ' && !this._keyDragDropEnabled) {
+      this.beforeStarted.next();
+      this._keyDragDropEnabled = true;
+      event.stopImmediatePropagation();
+      if (this._handles.length) {
+        const targetHandle = this._getTargetHandle(event);
+
+        if (targetHandle && !this._disabledHandles.has(targetHandle) && !this.disabled) {
+          this._initializeDragSequence(targetHandle, event);
+        }
+      } else if (!this.disabled) {
+        this._initializeDragSequence(this._rootElement, event);
+      }
+      this._rootElement.setAttribute('aria-grabbed', 'true');
+      this._dragDropRegistry.keyboardMovement.next({event: event, x: 0, y: 0}); // initial event to start dragging without movement
+    } else if (event.key === 'Tab' && this._keyDragDropEnabled) {
+      event.preventDefault();
+    }
+  };
+
   /** Handler that is invoked when the user moves their pointer after they've initiated a drag. */
-  private _pointerMove = (event: MouseEvent | TouchEvent) => {
+  private _pointerMove = (input: MouseEvent | TouchEvent | KeyboardMovement) => {
+    const isKeyboardMovement = (x: any): x is KeyboardMovement => x.event !== undefined;
+    const event = isKeyboardMovement(input) ? input.event : input;
     const pointerPosition = this._getPointerPositionOnPage(event);
 
     if (!this._hasStartedDragging) {
@@ -666,7 +704,7 @@ export class DragRef<T = any> {
       // direction. Note that this is preferable over doing something like `skip(minimumDistance)`
       // in the `pointerMove` subscription, because we're not guaranteed to have one move event
       // per pixel of movement (e.g. if the user moves their pointer quickly).
-      if (isOverThreshold) {
+      if (isOverThreshold || isKeyboardEvent(event)) {
         const isDelayElapsed = Date.now() >= this._dragStartTime + this._getDragStartDelay(event);
         const container = this._dropContainer;
 
@@ -695,7 +733,11 @@ export class DragRef<T = any> {
     // if there's a dragging delay.
     event.preventDefault();
 
-    const constrainedPointerPosition = this._getConstrainedPointerPosition(pointerPosition);
+    const constrainedPointerPosition = this._getConstrainedPointerPosition(
+      pointerPosition,
+      isKeyboardMovement(input) ? input.x : undefined,
+      isKeyboardMovement(input) ? input.y : undefined,
+    );
     this._hasMoved = true;
     this._lastKnownPointerPosition = pointerPosition;
     this._updatePointerDirectionDelta(constrainedPointerPosition);
@@ -729,7 +771,7 @@ export class DragRef<T = any> {
   };
 
   /** Handler that is invoked when the user lifts their pointer up, after initiating a drag. */
-  private _pointerUp = (event: MouseEvent | TouchEvent) => {
+  private _pointerUp = (event: MouseEvent | TouchEvent | KeyboardEvent) => {
     this._endDragSequence(event);
   };
 
@@ -737,7 +779,7 @@ export class DragRef<T = any> {
    * Clears subscriptions and stops the dragging sequence.
    * @param event Browser event object that ended the sequence.
    */
-  private _endDragSequence(event: MouseEvent | TouchEvent) {
+  private _endDragSequence(event: MouseEvent | TouchEvent | KeyboardEvent) {
     // Note that here we use `isDragging` from the service, rather than from `this`.
     // The difference is that the one from the service reflects whether a dragging sequence
     // has been initiated, whereas the one on `this` includes whether the user has passed
@@ -749,6 +791,7 @@ export class DragRef<T = any> {
     this._removeSubscriptions();
     this._dragDropRegistry.stopDragging(this);
     this._toggleNativeDragInteractions();
+    this._keyDragDropEnabled = false;
 
     if (this._handles) {
       (this._rootElement.style as DragCSSStyleDeclaration).webkitTapHighlightColor =
@@ -790,7 +833,7 @@ export class DragRef<T = any> {
   }
 
   /** Starts the dragging sequence. */
-  private _startDragSequence(event: MouseEvent | TouchEvent) {
+  private _startDragSequence(event: MouseEvent | TouchEvent | KeyboardEvent) {
     if (isTouchEvent(event)) {
       this._lastTouchEventTime = Date.now();
     }
@@ -845,7 +888,10 @@ export class DragRef<T = any> {
    * @param referenceElement Element that started the drag sequence.
    * @param event Browser event object that started the sequence.
    */
-  private _initializeDragSequence(referenceElement: HTMLElement, event: MouseEvent | TouchEvent) {
+  private _initializeDragSequence(
+    referenceElement: HTMLElement,
+    event: MouseEvent | TouchEvent | KeyboardEvent,
+  ) {
     // Stop propagation if the item is inside another
     // draggable so we don't start multiple drag sequences.
     if (this._parentDragRef) {
@@ -853,8 +899,10 @@ export class DragRef<T = any> {
     }
 
     const isDragging = this.isDragging();
+    const isKeyboardSequence = isKeyboardEvent(event);
     const isTouchSequence = isTouchEvent(event);
-    const isAuxiliaryMouseButton = !isTouchSequence && (event as MouseEvent).button !== 0;
+    const isAuxiliaryMouseButton =
+      !isTouchSequence && (event as MouseEvent).button !== 0 && !isKeyboardSequence;
     const rootElement = this._rootElement;
     const target = _getEventTarget(event);
     const isSyntheticEvent =
@@ -896,6 +944,9 @@ export class DragRef<T = any> {
     this._removeSubscriptions();
     this._initialClientRect = this._rootElement.getBoundingClientRect();
     this._pointerMoveSubscription = this._dragDropRegistry.pointerMove.subscribe(this._pointerMove);
+    this._keyboardSubscription = this._dragDropRegistry.keyboardMovement.subscribe(
+      this._pointerMove,
+    );
     this._pointerUpSubscription = this._dragDropRegistry.pointerUp.subscribe(this._pointerUp);
     this._scrollSubscription = this._dragDropRegistry
       .scrolled(this._getShadowRoot())
@@ -924,7 +975,7 @@ export class DragRef<T = any> {
   }
 
   /** Cleans up the DOM artifacts that were added to facilitate the element being dragged. */
-  private _cleanupDragArtifacts(event: MouseEvent | TouchEvent) {
+  private _cleanupDragArtifacts(event: MouseEvent | TouchEvent | KeyboardEvent) {
     // Restore the element's visibility and insert it at its old position in the DOM.
     // It's important that we maintain the position, because moving the element around in the DOM
     // can throw off `NgFor` which does smart diffing and re-creates elements only when necessary,
@@ -1187,16 +1238,28 @@ export class DragRef<T = any> {
    * @param event Event that initiated the dragging.
    */
   private _getPointerPositionInElement(
-    elementRect: ClientRect,
+    elementRect: DOMRect,
     referenceElement: HTMLElement,
-    event: MouseEvent | TouchEvent,
+    event: MouseEvent | TouchEvent | KeyboardEvent,
   ): Point {
     const handleElement = referenceElement === this._rootElement ? null : referenceElement;
     const referenceRect = handleElement ? handleElement.getBoundingClientRect() : elementRect;
-    const point = isTouchEvent(event) ? event.targetTouches[0] : event;
+    let point;
+    if (isTouchEvent(event)) {
+      point = event.targetTouches[0];
+    } else if (isKeyboardEvent(event)) {
+      point = {pageX: referenceRect.x, pageY: referenceRect.y};
+    } else {
+      point = event;
+    }
     const scrollPosition = this._getViewportScrollPosition();
-    const x = point.pageX - referenceRect.left - scrollPosition.left;
-    const y = point.pageY - referenceRect.top - scrollPosition.top;
+    let x = point.pageX - referenceRect.left;
+    let y = point.pageY - referenceRect.top;
+
+    if (isTouchEvent(event) || !isKeyboardEvent(event)) {
+      x -= scrollPosition.left;
+      y -= scrollPosition.top;
+    }
 
     return {
       x: referenceRect.left - elementRect.left + x,
@@ -1205,21 +1268,39 @@ export class DragRef<T = any> {
   }
 
   /** Determines the point of the page that was touched by the user. */
-  private _getPointerPositionOnPage(event: MouseEvent | TouchEvent): Point {
+  private _getPointerPositionOnPage(event: MouseEvent | TouchEvent | KeyboardEvent): Point {
     const scrollPosition = this._getViewportScrollPosition();
-    const point = isTouchEvent(event)
-      ? // `touches` will be empty for start/end events so we have to fall back to `changedTouches`.
-        // Also note that on real devices we're guaranteed for either `touches` or `changedTouches`
-        // to have a value, but Firefox in device emulation mode has a bug where both can be empty
-        // for `touchstart` and `touchend` so we fall back to a dummy object in order to avoid
-        // throwing an error. The value returned here will be incorrect, but since this only
-        // breaks inside a developer tool and the value is only used for secondary information,
-        // we can get away with it. See https://bugzilla.mozilla.org/show_bug.cgi?id=1615824.
-        event.touches[0] || event.changedTouches[0] || {pageX: 0, pageY: 0}
-      : event;
+    let point;
+    // `touches` will be empty for start/end events so we have to fall back to `changedTouches`.
+    // Also note that on real devices we're guaranteed for either `touches` or `changedTouches`
+    // to have a value, but Firefox in device emulation mode has a bug where both can be empty
+    // for `touchstart` and `touchend` so we fall back to a dummy object in order to avoid
+    // throwing an error. The value returned here will be incorrect, but since this only
+    // breaks inside a developer tool and the value is only used for secondary information,
+    // we can get away with it. See https://bugzilla.mozilla.org/show_bug.cgi?id=1615824.
+    if (isTouchEvent(event)) {
+      point = event.touches[0] || event.changedTouches[0] || {pageX: 0, pageY: 0};
+    } else if (isKeyboardEvent(event)) {
+      point = {
+        pageX:
+          this._preview?.getBoundingClientRect().x ??
+          (event.target as HTMLElement).getBoundingClientRect().x,
+        pageY:
+          this._preview?.getBoundingClientRect().y ??
+          (event.target as HTMLElement).getBoundingClientRect().y,
+      };
+    } else {
+      point = event as MouseEvent;
+    }
 
-    const x = point.pageX - scrollPosition.left;
-    const y = point.pageY - scrollPosition.top;
+    let x = point.pageX;
+    let y = point.pageY;
+    if (isTouchEvent(event) || !isKeyboardEvent(event)) {
+      x -= scrollPosition.left;
+      y -= scrollPosition.top;
+    }
+
+    // debugger;
 
     // if dragging SVG element, try to convert from the screen coordinate system to the SVG
     // coordinate system
@@ -1237,11 +1318,18 @@ export class DragRef<T = any> {
   }
 
   /** Gets the pointer position on the page, accounting for any position constraints. */
-  private _getConstrainedPointerPosition(point: Point): Point {
+  private _getConstrainedPointerPosition(
+    point: Point,
+    moveX: number = 0,
+    moveY: number = 0,
+  ): Point {
     const dropContainerLock = this._dropContainer ? this._dropContainer.lockAxis : null;
     let {x, y} = this.constrainPosition
       ? this.constrainPosition(point, this, this._initialClientRect!, this._pickupPositionInElement)
       : point;
+
+    x += moveX;
+    y += moveY;
 
     if (this.lockAxis === 'x' || dropContainerLock === 'x') {
       y = this._pickupPositionOnPage.y;
@@ -1432,7 +1520,7 @@ export class DragRef<T = any> {
   }
 
   /** Gets the drag start delay, based on the event type. */
-  private _getDragStartDelay(event: MouseEvent | TouchEvent): number {
+  private _getDragStartDelay(event: MouseEvent | TouchEvent | KeyboardEvent): number {
     const value = this.dragStartDelay;
 
     if (typeof value === 'number') {
@@ -1527,7 +1615,7 @@ export class DragRef<T = any> {
   }
 
   /** Lazily resolves and returns the dimensions of the preview. */
-  private _getPreviewRect(): ClientRect {
+  private _getPreviewRect(): DOMRect {
     // Cache the preview element rect if we haven't cached it already or if
     // we cached it too early before the element dimensions were computed.
     if (!this._previewRect || (!this._previewRect.width && !this._previewRect.height)) {
@@ -1579,11 +1667,19 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /** Determines whether an event is a touch event. */
-function isTouchEvent(event: MouseEvent | TouchEvent): event is TouchEvent {
+function isTouchEvent(event: MouseEvent | TouchEvent | KeyboardEvent): event is TouchEvent {
   // This function is called for every pixel that the user has dragged so we need it to be
   // as fast as possible. Since we only bind mouse events and touch events, we can assume
   // that if the event's name starts with `t`, it's a touch event.
   return event.type[0] === 't';
+}
+
+/** Determines whether an event is a touch event. */
+function isKeyboardEvent(event: MouseEvent | TouchEvent | KeyboardEvent): event is KeyboardEvent {
+  // This function is called for every pixel that the user has dragged so we need it to be
+  // as fast as possible. Since we only bind mouse events and touch events, we can assume
+  // that if the event's name starts with `t`, it's a touch event.
+  return event.type[0] === 'k';
 }
 
 /**

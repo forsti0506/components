@@ -14,7 +14,7 @@ export interface CdkDragStart<T = any> {
   /** Draggable that emitted the event. */
   source: CdkDrag<T>;
   /** Native event that started the drag sequence. */
-  event: MouseEvent | TouchEvent;
+  event: MouseEvent | TouchEvent | KeyboardEvent;
 }
 
 /** Event emitted when the user releases an item, before any animations have started. */
@@ -22,7 +22,7 @@ export interface CdkDragRelease<T = any> {
   /** Draggable that emitted the event. */
   source: CdkDrag<T>;
   /** Native event that caused the release event. */
-  event: MouseEvent | TouchEvent;
+  event: MouseEvent | TouchEvent | KeyboardEvent;
 }
 
 /** Event emitted when the user stops dragging a draggable. */
@@ -34,7 +34,7 @@ export interface CdkDragEnd<T = any> {
   /** Position where the pointer was when the item was dropped */
   dropPoint: {x: number; y: number};
   /** Native event that caused the dragging to stop. */
-  event: MouseEvent | TouchEvent;
+  event: MouseEvent | TouchEvent | KeyboardEvent;
 }
 
 /** Event emitted when the user moves an item into a new drop container. */
@@ -77,7 +77,7 @@ export interface CdkDragDrop<T, O = T, I = any> {
   /** Position where the pointer was when the item was dropped */
   dropPoint: {x: number; y: number};
   /** Native event that caused the drop event. */
-  event: MouseEvent | TouchEvent;
+  event: MouseEvent | TouchEvent | KeyboardEvent;
 }
 
 /** Event emitted as the user is dragging a draggable item. */
@@ -87,7 +87,7 @@ export interface CdkDragMove<T = any> {
   /** Position of the user's pointer on the page. */
   pointerPosition: {x: number; y: number};
   /** Native event that is causing the dragging. */
-  event: MouseEvent | TouchEvent;
+  event: MouseEvent | TouchEvent | KeyboardEvent;
   /** Distance in pixels that the user has dragged since the drag sequence started. */
   distance: {x: number; y: number};
   /**

@@ -11,6 +11,8 @@ import {DOCUMENT} from '@angular/common';
 import {normalizePassiveListenerOptions} from '@angular/cdk/platform';
 import {merge, Observable, Observer, Subject} from 'rxjs';
 
+export type KeyboardMovement = {event: KeyboardEvent; x: number; y: number};
+
 /** Event options that can be used to bind an active, capturing event. */
 const activeCapturingEventOptions = normalizePassiveListenerOptions({
   passive: false,
@@ -42,7 +44,7 @@ export class DragDropRegistry<I extends {isDragging(): boolean}, C> implements O
   private _globalListeners = new Map<
     string,
     {
-      handler: (event: Event) => void;
+      handler: (event: Event | KeyboardEvent) => void;
       options?: AddEventListenerOptions | boolean;
     }
   >();
@@ -63,7 +65,9 @@ export class DragDropRegistry<I extends {isDragging(): boolean}, C> implements O
    * Emits the `touchend` or `mouseup` events that are dispatched
    * while the user is dragging a drag item instance.
    */
-  readonly pointerUp: Subject<TouchEvent | MouseEvent> = new Subject<TouchEvent | MouseEvent>();
+  readonly pointerUp: Subject<TouchEvent | MouseEvent | KeyboardEvent> = new Subject<
+    TouchEvent | MouseEvent | KeyboardEvent
+  >();
 
   /**
    * Emits when the viewport has been scrolled while the user is dragging an item.
@@ -71,6 +75,12 @@ export class DragDropRegistry<I extends {isDragging(): boolean}, C> implements O
    * @breaking-change 13.0.0
    */
   readonly scroll: Subject<Event> = new Subject<Event>();
+
+  /**
+   * Emits the `touchmove` or `mousemove` events that are dispatched
+   * while the user is dragging a drag item instance.
+   */
+  readonly keyboardMovement: Subject<KeyboardMovement> = new Subject<KeyboardMovement>();
 
   constructor(private _ngZone: NgZone, @Inject(DOCUMENT) _document: any) {
     this._document = _document;
@@ -127,7 +137,7 @@ export class DragDropRegistry<I extends {isDragging(): boolean}, C> implements O
    * @param drag Drag instance which is being dragged.
    * @param event Event that initiated the dragging.
    */
-  startDragging(drag: I, event: TouchEvent | MouseEvent) {
+  startDragging(drag: I, event: TouchEvent | MouseEvent | KeyboardEvent) {
     // Do not process the same drag twice to avoid memory leaks and redundant listeners
     if (this._activeDragInstances.indexOf(drag) > -1) {
       return;
@@ -136,6 +146,7 @@ export class DragDropRegistry<I extends {isDragging(): boolean}, C> implements O
     this._activeDragInstances.push(drag);
 
     if (this._activeDragInstances.length === 1) {
+      const isKeyboardEvent = event.type.startsWith('k');
       const isTouchEvent = event.type.startsWith('touch');
 
       // We explicitly bind __active__ listeners here, because newer browsers will default to
@@ -163,10 +174,28 @@ export class DragDropRegistry<I extends {isDragging(): boolean}, C> implements O
 
       // We don't have to bind a move event for touch drag sequences, because
       // we already have a persistent global one bound from `registerDragItem`.
-      if (!isTouchEvent) {
+      if (!isTouchEvent && !isKeyboardEvent) {
         this._globalListeners.set('mousemove', {
           handler: (e: Event) => this.pointerMove.next(e as MouseEvent),
           options: activeCapturingEventOptions,
+        });
+      } else if (!isTouchEvent && isKeyboardEvent) {
+        this._globalListeners.set('keydown', {
+          handler: (e: Event) => {
+            if (e instanceof KeyboardEvent) {
+              if (e.key === 'ArrowRight') {
+                this.keyboardMovement.next({event: e, x: 10, y: 0});
+              } else if (e.key === 'ArrowLeft') {
+                this.keyboardMovement.next({event: e, x: -10, y: 0});
+              } else if (e.key === 'ArrowUp') {
+                this.keyboardMovement.next({event: e, x: 0, y: -10});
+              } else if (e.key === 'ArrowDown') {
+                this.keyboardMovement.next({event: e, x: 0, y: 10});
+              } else if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Space') {
+                this.pointerUp.next(e);
+              }
+            }
+          },
         });
       }
 

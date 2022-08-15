@@ -597,7 +597,7 @@ export class DropListRef<T = any> {
     ) {
       return false;
     }
-
+    debugger;
     const elementFromPoint = this._getShadowRoot().elementFromPoint(x, y) as HTMLElement | null;
 
     // If there's no element at the pointer position, then

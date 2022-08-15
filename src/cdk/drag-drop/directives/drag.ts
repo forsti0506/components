@@ -28,6 +28,7 @@ import {
   SimpleChanges,
   ChangeDetectorRef,
   Self,
+  HostBinding,
 } from '@angular/core';
 import {
   coerceBooleanProperty,
@@ -66,6 +67,7 @@ const DRAG_HOST_CLASS = 'cdk-drag';
     'class': DRAG_HOST_CLASS,
     '[class.cdk-drag-disabled]': 'disabled',
     '[class.cdk-drag-dragging]': '_dragRef.isDragging()',
+    '[tabindex]': '(disabled || _handles?.length > 0) ? -1 : 0',
   },
   providers: [{provide: CDK_DRAG_PARENT, useExisting: CdkDrag}],
 })
@@ -73,8 +75,24 @@ export class CdkDrag<T = any> implements AfterViewInit, OnChanges, OnDestroy {
   private readonly _destroyed = new Subject<void>();
   private static _dragInstances: CdkDrag[] = [];
 
+  private readonly _elementsWithNoAriaGrabbedPurpose = ['select', 'div', 'span'];
+
   /** Reference to the underlying drag instance. */
   _dragRef: DragRef<CdkDrag<T>>;
+
+  @HostBinding('attr.aria-grabbed') get ariaGrabbed() {
+    return this.disabled ? undefined : 'false';
+  }
+
+  @HostBinding('attr.role') get ariaRole() {
+    return this.element.nativeElement.getAttribute('role')
+      ? this.element.nativeElement.getAttribute('role')
+      : this._elementsWithNoAriaGrabbedPurpose.includes(
+          this.element.nativeElement.tagName.toLocaleLowerCase(),
+        )
+      ? 'listitem'
+      : undefined;
+  }
 
   /** Elements that can be used to drag the draggable item. */
   @ContentChildren(CDK_DRAG_HANDLE, {descendants: true}) _handles: QueryList<CdkDragHandle>;
